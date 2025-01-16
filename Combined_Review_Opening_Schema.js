@@ -5,7 +5,7 @@
  */
 function loadGoogleData(placeId, options = {}) {
     // Fetch data from the Google API
-    fetch(`https://us-central1-kundeportal-online.cloudfunctions.net/Google-Business-profil-v1/getPlaceDetails?placeId=${placeId}`)
+    fetch(`https://us-central1-kundeportal-online.cloudfunctions.net/Business-profil_test-3/getPlaceDetails?placeId=${placeId}`)
         .then(response => response.json())
         .then(data => {
             console.log('Place Details:', data);
