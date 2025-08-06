@@ -1,26 +1,37 @@
 /**
  * Load Google data dynamically and handle schema markup, reviews, and opening hours.
- * @param {string} placeId - The Google Place ID for the location.
+ * Tries to detect placeId from the page if not provided.
+ * @param {string|null} placeId - The Google Place ID (optional if present on page)
  * @param {object} options - Configuration options for schema, reviews, and opening hours.
  */
 function loadGoogleData(placeId, options = {}) {
-    // Fetch data from the Google API
-    fetch(`https://us-central1-kundeportal-online.cloudfunctions.net/Business-profil_test-3/getPlaceDetails?placeId=${placeId}`)
+    // Try to find placeId from DOM if not explicitly provided
+    if (!placeId) {
+        const el = document.querySelector('[data-place-id]');
+        placeId = el ? el.getAttribute('data-place-id') : null;
+    }
+
+    if (!placeId) {
+        console.warn('No Google Place ID provided or found on page.');
+        return;
+    }
+
+    // Replace with your actual Render.com API URL
+    const endpoint = `https://kundeportal-place-api.onrender.com/getPlaceDetails?placeId=${placeId}`;
+
+    fetch(endpoint)
         .then(response => response.json())
         .then(data => {
             console.log('Place Details:', data);
 
-            // Handle schema markup if enabled
             if (options.schemaEnabled) {
                 generateSchema(data, options.schemaFields || {});
             }
 
-            // Handle reviews if enabled
             if (options.reviewsEnabled) {
                 displayReviews(data, options.reviewSelectors || {});
             }
 
-            // Handle opening hours if enabled
             if (options.openingHoursEnabled) {
                 displayOpeningHours(data, options.openingHoursSelectors || {});
             }
@@ -55,7 +66,6 @@ function generateSchema(data, fields) {
         });
     }
 
-    // Dynamically construct the schema and exclude empty fields
     const schemaMarkup = {
         "@context": "https://schema.org",
         "@type": fields.type || "Dentist",
@@ -95,7 +105,7 @@ function displayReviews(data, selectors) {
 
     const scoreTexts = document.querySelectorAll(selectors.score || '[hero-reviews="score"]');
     const textWrappers = document.querySelectorAll(selectors.textWrapper || '[hero-reviews="text-wrapper"]');
-    const reviewsLink = selectors.reviewsLink || `https://www.google.com/maps/search/?api=1&query=Google&query_place_id=${selectors.placeId}`;
+    const reviewsLink = selectors.reviewsLink || `https://www.google.com/maps/search/?api=1&query=Google&query_place_id=${selectors.placeId || ''}`;
 
     scoreTexts.forEach(scoreText => {
         scoreText.textContent = Number.isInteger(averageScore) ? `${averageScore}` : `${averageScore.toFixed(1)}`;
