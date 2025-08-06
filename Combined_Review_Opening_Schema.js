@@ -1,25 +1,10 @@
 /**
  * Load Google data dynamically and handle schema markup, reviews, and opening hours.
- * Tries to detect placeId from the page if not provided.
- * @param {string|null} placeId - The Google Place ID (optional if present on page)
+ * @param {string} placeId - The Google Place ID for the location.
  * @param {object} options - Configuration options for schema, reviews, and opening hours.
  */
 function loadGoogleData(placeId, options = {}) {
-    // Try to find placeId from DOM if not explicitly provided
-    if (!placeId) {
-        const el = document.querySelector('[data-place-id]');
-        placeId = el ? el.getAttribute('data-place-id') : null;
-    }
-
-    if (!placeId) {
-        console.warn('No Google Place ID provided or found on page.');
-        return;
-    }
-
-    // Replace with your actual Render.com API URL
-    const endpoint = `https://kundeportal-place-api.onrender.com/getPlaceDetails?placeId=${placeId}`;
-
-    fetch(endpoint)
+    fetch(`https://kundeportal-place-api.onrender.com/getPlaceDetails?placeId=${placeId}`)
         .then(response => response.json())
         .then(data => {
             console.log('Place Details:', data);
@@ -40,9 +25,7 @@ function loadGoogleData(placeId, options = {}) {
 }
 
 /**
- * Generate and inject schema markup.
- * @param {object} data - The API response data.
- * @param {object} fields - Custom fields for schema markup.
+ * Generate and inject schema markup dynamically.
  */
 function generateSchema(data, fields) {
     const openingHoursSpecification = [];
@@ -66,14 +49,19 @@ function generateSchema(data, fields) {
         });
     }
 
+    // Støtte for én eller flere @type (f.eks. ["LocalBusiness", "MedicalClinic"])
+    const typeValue = Array.isArray(fields.type) ? fields.type : [fields.type || "Dentist"];
+
     const schemaMarkup = {
         "@context": "https://schema.org",
-        "@type": fields.type || "Dentist",
+        "@type": typeValue,
         ...(fields.name && { "name": fields.name }),
+        ...(fields.description && { "description": fields.description }),
         ...(fields.url && { "url": fields.url }),
         ...(fields.address && { "address": fields.address }),
         ...(fields.telephone && { "telephone": fields.telephone }),
         ...(fields.priceRange && { "priceRange": fields.priceRange }),
+        ...(fields.medicalSpecialty && { "medicalSpecialty": fields.medicalSpecialty }),
         "aggregateRating": {
             "@type": "AggregateRating",
             "ratingValue": data.rating || 0,
@@ -90,9 +78,7 @@ function generateSchema(data, fields) {
 }
 
 /**
- * Display reviews dynamically.
- * @param {object} data - The API response data.
- * @param {object} selectors - Custom selectors for DOM elements.
+ * Display reviews visually.
  */
 function displayReviews(data, selectors) {
     const averageScore = data.rating || 0;
@@ -105,7 +91,7 @@ function displayReviews(data, selectors) {
 
     const scoreTexts = document.querySelectorAll(selectors.score || '[hero-reviews="score"]');
     const textWrappers = document.querySelectorAll(selectors.textWrapper || '[hero-reviews="text-wrapper"]');
-    const reviewsLink = selectors.reviewsLink || `https://www.google.com/maps/search/?api=1&query=Google&query_place_id=${selectors.placeId || ''}`;
+    const reviewsLink = selectors.reviewsLink || `https://www.google.com/maps/search/?api=1&query=Google&query_place_id=${selectors.placeId}`;
 
     scoreTexts.forEach(scoreText => {
         scoreText.textContent = Number.isInteger(averageScore) ? `${averageScore}` : `${averageScore.toFixed(1)}`;
@@ -132,13 +118,11 @@ function displayReviews(data, selectors) {
 }
 
 /**
- * Display opening hours dynamically.
- * @param {object} data - The API response data.
- * @param {object} selectors - Custom selectors for DOM elements.
+ * Display opening hours visually.
  */
 function displayOpeningHours(data, selectors) {
     const container = document.querySelector(selectors.list || '[opening-hours="list"]');
-    const template = document.querySelector(selectors.item || '[opening-hours="item"]').cloneNode(true);
+    const template = document.querySelector(selectors.item || '[opening-hours="item"]')?.cloneNode(true);
 
     if (!container || !template) {
         console.warn('Opening hours selectors not found.');
