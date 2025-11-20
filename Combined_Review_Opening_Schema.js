@@ -26,8 +26,15 @@ function loadGoogleData(placeId, options = {}) {
 
 /**
  * Generate and inject schema markup dynamically.
+ * Handles:
+ * - Multiple @type values
+ * - Optional medicalSpecialty (only for medical-type businesses, and only when non-empty)
+ * - Logo
+ * - sameAs from GBP / Facebook / Instagram / LinkedIn
+ * - @id auto-generated from url if not provided
  */
 function generateSchema(data, fields) {
+    // ----- Opening hours from Google Places -----
     const openingHoursSpecification = [];
 
     if (data.opening_hours && data.opening_hours.weekday_text) {
@@ -49,31 +56,95 @@ function generateSchema(data, fields) {
         });
     }
 
-    // Støtte for én eller flere @type (f.eks. ["LocalBusiness", "MedicalClinic"])
+    // ----- Support one or more @type (e.g. ["LocalBusiness", "MedicalClinic"]) -----
     const typeValue = Array.isArray(fields.type) ? fields.type : [fields.type || "Dentist"];
+    const primaryType = typeValue[0] ? String(typeValue[0]) : "";
 
     const schemaMarkup = {
         "@context": "https://schema.org",
-        "@type": typeValue,
-        ...(fields.name && { "name": fields.name }),
-        ...(fields.description && { "description": fields.description }),
-        ...(fields.url && { "url": fields.url }),
-        ...(fields.address && { "address": fields.address }),
-        ...(fields.telephone && { "telephone": fields.telephone }),
-        ...(fields.priceRange && { "priceRange": fields.priceRange }),
-        ...(fields.medicalSpecialty && { "medicalSpecialty": fields.medicalSpecialty }),
-        "aggregateRating": {
-            "@type": "AggregateRating",
-            "ratingValue": data.rating || 0,
-            "reviewCount": data.user_ratings_total || 0
-        },
-        ...(openingHoursSpecification.length && { "openingHoursSpecification": openingHoursSpecification })
+        "@type": typeValue
     };
 
+    // ----- Basic identity -----
+    if (fields.name) schemaMarkup.name = fields.name;
+    if (fields.description) schemaMarkup.description = fields.description;
+    if (fields.url) schemaMarkup.url = fields.url;
+
+    // ----- @id (stable identifier) -----
+    if (fields.id) {
+        schemaMarkup["@id"] = fields.id;
+    } else if (fields.url) {
+        // Remove trailing slash and append #business
+        schemaMarkup["@id"] = fields.url.replace(/\/$/, "") + "#business";
+    }
+
+    // ----- Logo -----
+    if (fields.logo) {
+        schemaMarkup.logo = fields.logo;
+    }
+
+    // ----- Address, telephone, priceRange -----
+    if (fields.address) schemaMarkup.address = fields.address;
+    if (fields.telephone) schemaMarkup.telephone = fields.telephone;
+    if (fields.priceRange) schemaMarkup.priceRange = fields.priceRange;
+
+    // ----- medicalSpecialty (optional, only for medical-like types and non-empty value) -----
+    if (
+        fields.medicalSpecialty &&
+        typeof fields.medicalSpecialty === "string" &&
+        fields.medicalSpecialty.trim() !== ""
+    ) {
+        const typeLower = primaryType.toLowerCase();
+        const isMedicalType = /medical|clinic|hospital|dentist|physio|podiat/i.test(typeLower);
+
+        if (isMedicalType) {
+            schemaMarkup.medicalSpecialty = fields.medicalSpecialty.trim();
+        }
+    }
+
+    // ----- sameAs from social / GBP URLs (filter out empties) -----
+    const sameAsFromConfig = [];
+
+    // Allow a direct sameAs array if you ever want that
+    if (Array.isArray(fields.sameAs)) {
+        sameAsFromConfig.push(...fields.sameAs);
+    } else {
+        // Individual fields from your CMS
+        sameAsFromConfig.push(
+            fields.gbp,
+            fields.facebook,
+            fields.instagram,
+            fields.linkedin
+        );
+    }
+
+    const sameAsClean = sameAsFromConfig
+        .filter(url => typeof url === "string")
+        .map(url => url.trim())
+        .filter(url => url.length > 0);
+
+    if (sameAsClean.length) {
+        schemaMarkup.sameAs = sameAsClean;
+    }
+
+    // ----- Aggregate rating from Google Places -----
+    schemaMarkup.aggregateRating = {
+        "@type": "AggregateRating",
+        "ratingValue": data.rating || 0,
+        "reviewCount": data.user_ratings_total || 0
+    };
+
+    // ----- Opening hours specification -----
+    if (openingHoursSpecification.length) {
+        schemaMarkup.openingHoursSpecification = openingHoursSpecification;
+    }
+
+    // ----- Inject JSON-LD into <head> -----
     const script = document.createElement('script');
     script.type = 'application/ld+json';
     script.textContent = JSON.stringify(schemaMarkup, null, 2);
     document.head.appendChild(script);
+
     console.log('Schema Markup Added:', schemaMarkup);
 }
 
