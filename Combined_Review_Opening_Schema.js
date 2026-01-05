@@ -1,223 +1,257 @@
 /**
- * Load Google data dynamically and handle schema markup, reviews, and opening hours.
- * @param {string} placeId - The Google Place ID for the location.
- * @param {object} options - Configuration options for schema, reviews, and opening hours.
+ * v1.0.3
+ * - Schema enhancement updates an existing JSON-LD script (static base in <head>)
+ * - Fixes dayOfWeek to schema.org URIs (Monday...Sunday)
+ * - Supports split opening hours (e.g. "09:00–12:00, 13:00–16:00")
+ * - Only adds aggregateRating when data exists
+ */
+
+/**
+ * Load Google data and optionally enhance schema + display reviews/opening hours.
+ * @param {string} placeId
+ * @param {object} options
  */
 function loadGoogleData(placeId, options = {}) {
-    fetch(`https://kundeportal-place-api.onrender.com/getPlaceDetails?placeId=${placeId}`)
-        .then(response => response.json())
-        .then(data => {
-            console.log('Place Details:', data);
+  const endpoint = `https://kundeportal-place-api.onrender.com/getPlaceDetails?placeId=${encodeURIComponent(placeId)}`;
 
-            if (options.schemaEnabled) {
-                generateSchema(data, options.schemaFields || {});
-            }
+  fetch(endpoint)
+    .then(res => res.json())
+    .then(data => {
+      // Enhance schema (updates existing JSON-LD in <head>)
+      if (options.schemaEnhanceEnabled) {
+        enhanceSchema(data, options.schemaFields || {}, options.schemaTargetId);
+      }
 
-            if (options.reviewsEnabled) {
-                displayReviews(data, options.reviewSelectors || {});
-            }
+      // UI: Reviews
+      if (options.reviewsEnabled) {
+        displayReviews(data, options.reviewSelectors || {});
+      }
 
-            if (options.openingHoursEnabled) {
-                displayOpeningHours(data, options.openingHoursSelectors || {});
-            }
-        })
-        .catch(error => console.error('Error fetching details:', error));
+      // UI: Opening hours
+      if (options.openingHoursEnabled) {
+        displayOpeningHours(data, options.openingHoursSelectors || {});
+      }
+    })
+    .catch(err => console.error('Error fetching place details:', err));
 }
 
 /**
- * Generate and inject schema markup dynamically.
- * Handles:
- * - Multiple @type values
- * - Optional medicalSpecialty (only for medical-type businesses, and only when non-empty)
- * - Logo
- * - sameAs from GBP / Facebook / Instagram / LinkedIn
- * - @id auto-generated from url if not provided
+ * Convert Norwegian day names to schema.org DayOfWeek URIs.
  */
-function generateSchema(data, fields) {
-    // ----- Opening hours from Google Places -----
-    const openingHoursSpecification = [];
+const DAY_URI_MAP = {
+  "Mandag": "https://schema.org/Monday",
+  "Tirsdag": "https://schema.org/Tuesday",
+  "Onsdag": "https://schema.org/Wednesday",
+  "Torsdag": "https://schema.org/Thursday",
+  "Fredag": "https://schema.org/Friday",
+  "Lørdag": "https://schema.org/Saturday",
+  "Søndag": "https://schema.org/Sunday"
+};
 
-    if (data.opening_hours && data.opening_hours.weekday_text) {
-        data.opening_hours.weekday_text.forEach(oh => {
-            const parts = oh.split(': ');
-            const dayOfWeek = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
+/**
+ * Parses a single weekday_text line from Google (Norwegian) into opening specs.
+ * Examples:
+ * "Mandag: 09:00–16:00"
+ * "Tirsdag: Stengt"
+ * "Onsdag: 09:00–12:00, 13:00–16:00"
+ * Returns array of OpeningHoursSpecification objects (possibly empty).
+ */
+function parseWeekdayTextToSpecs(weekdayText) {
+  const parts = String(weekdayText).split(': ');
+  const dayNo = (parts[0] || '').trim();
 
-            if (parts[1] && parts[1].toLowerCase() !== "stengt") {
-                const times = parts[1].replace(/–|—/g, ' - ');
-                const [openTime, closeTime] = times.split(' - ');
+  // If the format is unexpected, bail out safely.
+  if (!dayNo || !parts[1]) return [];
 
-                openingHoursSpecification.push({
-                    "@type": "OpeningHoursSpecification",
-                    "dayOfWeek": dayOfWeek,
-                    "opens": openTime.trim(),
-                    "closes": closeTime.trim()
-                });
-            }
-        });
+  const timePartRaw = parts[1].trim();
+  if (!timePartRaw || timePartRaw.toLowerCase() === 'stengt') return [];
+
+  const dayOfWeekUri = DAY_URI_MAP[dayNo] || dayNo; // fallback if not matched
+
+  // Normalize dash characters and split on commas for multiple intervals.
+  // Google sometimes uses en-dash or em-dash.
+  const normalized = timePartRaw.replace(/–|—/g, '-');
+  const intervals = normalized.split(',').map(s => s.trim()).filter(Boolean);
+
+  const specs = [];
+
+  intervals.forEach(interval => {
+    const [opens, closes] = interval.split('-').map(s => (s || '').trim());
+    if (!opens || !closes) return;
+
+    specs.push({
+      "@type": "OpeningHoursSpecification",
+      "dayOfWeek": dayOfWeekUri,
+      "opens": opens,
+      "closes": closes
+    });
+  });
+
+  return specs;
+}
+
+/**
+ * Enhances an existing JSON-LD LocalBusiness/MedicalClinic schema in the <head>.
+ * It does NOT create schema from scratch. You must have a base JSON-LD script present.
+ *
+ * @param {object} placeData - From your place details endpoint (Google Places)
+ * @param {object} fields - Optional config fields (e.g. gbp, medicalSpecialty)
+ * @param {string} targetId - The <script id="..."> containing base JSON-LD
+ */
+function enhanceSchema(placeData, fields, targetId) {
+  if (!targetId) {
+    console.warn('schemaTargetId missing. Skipping schema enhancement.');
+    return;
+  }
+
+  const el = document.getElementById(targetId);
+  if (!el) {
+    console.warn(`Schema element #${targetId} not found. Skipping schema enhancement.`);
+    return;
+  }
+
+  let base;
+  try {
+    base = JSON.parse(el.textContent);
+  } catch (e) {
+    console.warn('Failed to parse base JSON-LD. Skipping schema enhancement.', e);
+    return;
+  }
+
+  // Ensure @context exists
+  base["@context"] = base["@context"] || "https://schema.org";
+
+  // Ensure @type is array-friendly
+  if (fields.type) {
+    base["@type"] = Array.isArray(fields.type) ? fields.type : [fields.type];
+  } else if (!base["@type"]) {
+    base["@type"] = ["LocalBusiness"];
+  }
+
+  // Optional: medicalSpecialty only if provided and type is medical-like
+  if (fields.medicalSpecialty && String(fields.medicalSpecialty).trim() !== "") {
+    const typeStr = Array.isArray(base["@type"]) ? String(base["@type"][0] || "") : String(base["@type"] || "");
+    const isMedicalType = /medical|clinic|hospital צור|dentist|physio|podiat/i.test(typeStr.toLowerCase());
+    if (isMedicalType) {
+      base.medicalSpecialty = String(fields.medicalSpecialty).trim();
     }
+  }
 
-    // ----- Support one or more @type (e.g. ["LocalBusiness", "MedicalClinic"]) -----
-    const typeValue = Array.isArray(fields.type) ? fields.type : [fields.type || "Dentist"];
-    const primaryType = typeValue[0] ? String(typeValue[0]) : "";
+  // sameAs: merge in gbp if provided and not present
+  if (fields.gbp && typeof fields.gbp === "string") {
+    const gbp = fields.gbp.trim();
+    if (gbp) {
+      const sameAs = Array.isArray(base.sameAs) ? base.sameAs : [];
+      if (!sameAs.includes(gbp)) sameAs.push(gbp);
+      if (sameAs.length) base.sameAs = sameAs;
+    }
+  }
 
-    const schemaMarkup = {
-        "@context": "https://schema.org",
-        "@type": typeValue
+  // Aggregate rating only if real data exists
+  if (typeof placeData.rating === "number" && typeof placeData.user_ratings_total === "number") {
+    base.aggregateRating = {
+      "@type": "AggregateRating",
+      "ratingValue": placeData.rating,
+      "reviewCount": placeData.user_ratings_total
     };
+  }
 
-    // ----- Basic identity -----
-    if (fields.name) schemaMarkup.name = fields.name;
-    if (fields.description) schemaMarkup.description = fields.description;
-    if (fields.url) schemaMarkup.url = fields.url;
+  // Opening hours specification from Google Places weekday_text
+  const openingSpecs = [];
+  if (placeData.opening_hours && Array.isArray(placeData.opening_hours.weekday_text)) {
+    placeData.opening_hours.weekday_text.forEach(line => {
+      openingSpecs.push(...parseWeekdayTextToSpecs(line));
+    });
+  }
+  if (openingSpecs.length) {
+    base.openingHoursSpecification = openingSpecs;
+  }
 
-    // ----- @id (stable identifier) -----
-    if (fields.id) {
-        schemaMarkup["@id"] = fields.id;
-    } else if (fields.url) {
-        // Remove trailing slash and append #business
-        schemaMarkup["@id"] = fields.url.replace(/\/$/, "") + "#business";
-    }
-
-    // ----- Logo -----
-    if (fields.logo) {
-        schemaMarkup.logo = fields.logo;
-    }
-
-    // ----- Address, telephone, priceRange -----
-    if (fields.address) schemaMarkup.address = fields.address;
-    if (fields.telephone) schemaMarkup.telephone = fields.telephone;
-    if (fields.priceRange) schemaMarkup.priceRange = fields.priceRange;
-
-    // ----- medicalSpecialty (optional, only for medical-like types and non-empty value) -----
-    if (
-        fields.medicalSpecialty &&
-        typeof fields.medicalSpecialty === "string" &&
-        fields.medicalSpecialty.trim() !== ""
-    ) {
-        const typeLower = primaryType.toLowerCase();
-        const isMedicalType = /medical|clinic|hospital|dentist|physio|podiat/i.test(typeLower);
-
-        if (isMedicalType) {
-            schemaMarkup.medicalSpecialty = fields.medicalSpecialty.trim();
-        }
-    }
-
-    // ----- sameAs from social / GBP URLs (filter out empties) -----
-    const sameAsFromConfig = [];
-
-    // Allow a direct sameAs array if you ever want that
-    if (Array.isArray(fields.sameAs)) {
-        sameAsFromConfig.push(...fields.sameAs);
-    } else {
-        // Individual fields from your CMS
-        sameAsFromConfig.push(
-            fields.gbp,
-            fields.facebook,
-            fields.instagram,
-            fields.linkedin
-        );
-    }
-
-    const sameAsClean = sameAsFromConfig
-        .filter(url => typeof url === "string")
-        .map(url => url.trim())
-        .filter(url => url.length > 0);
-
-    if (sameAsClean.length) {
-        schemaMarkup.sameAs = sameAsClean;
-    }
-
-    // ----- Aggregate rating from Google Places -----
-    schemaMarkup.aggregateRating = {
-        "@type": "AggregateRating",
-        "ratingValue": data.rating || 0,
-        "reviewCount": data.user_ratings_total || 0
-    };
-
-    // ----- Opening hours specification -----
-    if (openingHoursSpecification.length) {
-        schemaMarkup.openingHoursSpecification = openingHoursSpecification;
-    }
-
-    // ----- Inject JSON-LD into <head> -----
-    const script = document.createElement('script');
-    script.type = 'application/ld+json';
-    script.textContent = JSON.stringify(schemaMarkup, null, 2);
-    document.head.appendChild(script);
-
-    console.log('Schema Markup Added:', schemaMarkup);
+  // Write back to the same script tag
+  el.textContent = JSON.stringify(base, null, 2);
 }
 
 /**
  * Display reviews visually.
  */
 function displayReviews(data, selectors) {
-    const averageScore = data.rating || 0;
-    const starsBars = document.querySelectorAll(selectors.starsBar || '[hero-reviews="stars-bar"]');
-    const starsPercentage = (averageScore / 5) * 100;
+  const averageScore = data.rating || 0;
+  const starsBars = document.querySelectorAll(selectors.starsBar || '[hero-reviews="stars-bar"]');
+  const starsPercentage = (averageScore / 5) * 100;
 
-    starsBars.forEach(starsBar => {
-        starsBar.style.width = `${starsPercentage}%`;
+  starsBars.forEach(starsBar => {
+    starsBar.style.width = `${starsPercentage}%`;
+  });
+
+  const scoreTexts = document.querySelectorAll(selectors.score || '[hero-reviews="score"]');
+  scoreTexts.forEach(scoreText => {
+    scoreText.textContent = Number.isInteger(averageScore) ? `${averageScore}` : `${averageScore.toFixed(1)}`;
+  });
+
+  const textWrappers = document.querySelectorAll(selectors.textWrapper || '[hero-reviews="text-wrapper"]');
+
+  // Safer reviews link: use place_id if available in endpoint response (if you include it)
+  const reviewsLink =
+    selectors.reviewsLink ||
+    (data.place_id
+      ? `https://www.google.com/maps/search/?api=1&query=Google&query_place_id=${encodeURIComponent(data.place_id)}`
+      : null);
+
+  if (reviewsLink) {
+    textWrappers.forEach(tw => {
+      tw.setAttribute('href', reviewsLink);
+      tw.setAttribute('target', '_blank');
+      tw.setAttribute('rel', 'noopener');
     });
+  }
 
-    const scoreTexts = document.querySelectorAll(selectors.score || '[hero-reviews="score"]');
-    const textWrappers = document.querySelectorAll(selectors.textWrapper || '[hero-reviews="text-wrapper"]');
-    const reviewsLink = selectors.reviewsLink || `https://www.google.com/maps/search/?api=1&query=Google&query_place_id=${selectors.placeId}`;
+  if (Array.isArray(data.reviews)) {
+    const reviewersWithPhotos = data.reviews.filter(r => r && r.profile_photo_url);
+    const photos = reviewersWithPhotos.slice(0, 3);
 
-    scoreTexts.forEach(scoreText => {
-        scoreText.textContent = Number.isInteger(averageScore) ? `${averageScore}` : `${averageScore.toFixed(1)}`;
+    photos.forEach((review, index) => {
+      const q = selectors.profilePhoto ? selectors.profilePhoto(index + 1) : `[hero-reviews="profile-photo-${index + 1}"]`;
+      const profilePhotoElements = document.querySelectorAll(q);
+      profilePhotoElements.forEach(el => {
+        el.innerHTML = `<img src="${review.profile_photo_url}" alt="Profile photo of ${review.author_name || 'reviewer'}" />`;
+      });
     });
-
-    textWrappers.forEach(textWrapper => {
-        textWrapper.setAttribute('href', reviewsLink);
-        textWrapper.setAttribute('target', '_blank');
-    });
-
-    if (data.reviews) {
-        const reviewersWithPhotos = data.reviews.filter(review => review.profile_photo_url);
-        const photos = reviewersWithPhotos.slice(0, 3);
-
-        photos.forEach((review, index) => {
-            const profilePhotoElements = document.querySelectorAll(selectors.profilePhoto(index + 1));
-            profilePhotoElements.forEach(profilePhotoElement => {
-                if (profilePhotoElement) {
-                    profilePhotoElement.innerHTML = `<img src="${review.profile_photo_url}" alt="Profile photo of ${review.author_name}" />`;
-                }
-            });
-        });
-    }
+  }
 }
 
 /**
  * Display opening hours visually.
  */
 function displayOpeningHours(data, selectors) {
-    const container = document.querySelector(selectors.list || '[opening-hours="list"]');
-    const template = document.querySelector(selectors.item || '[opening-hours="item"]')?.cloneNode(true);
+  const container = document.querySelector(selectors.list || '[opening-hours="list"]');
+  const template = document.querySelector(selectors.item || '[opening-hours="item"]')?.cloneNode(true);
 
-    if (!container || !template) {
-        console.warn('Opening hours selectors not found.');
-        return;
-    }
+  if (!container || !template) {
+    console.warn('Opening hours selectors not found.');
+    return;
+  }
 
-    template.style.display = null;
-    container.innerHTML = '';
+  template.style.display = null;
+  container.innerHTML = '';
 
-    if (data.opening_hours) {
-        data.opening_hours.weekday_text.forEach((oh, index) => {
-            const clone = template.cloneNode(true);
-            const parts = oh.split(': ');
-            const dayOfWeek = parts[0].charAt(0).toUpperCase() + parts[0].slice(1);
-            const times = parts[1]?.replace(/–|—/g, ' - ') || 'Stengt';
+  if (data.opening_hours && Array.isArray(data.opening_hours.weekday_text)) {
+    data.opening_hours.weekday_text.forEach((oh, index) => {
+      const clone = template.cloneNode(true);
+      const parts = String(oh).split(': ');
+      const day = (parts[0] || '').trim();
+      const times = (parts[1] || 'Stengt').replace(/–|—/g, ' - ');
 
-            clone.querySelector(selectors.day || '[opening-hours="day"]').textContent = dayOfWeek;
-            clone.querySelector(selectors.time || '[opening-hours="time"]').textContent = times;
+      const dayEl = clone.querySelector(selectors.day || '[opening-hours="day"]');
+      const timeEl = clone.querySelector(selectors.time || '[opening-hours="time"]');
 
-            if (index === data.opening_hours.weekday_text.length - 1) {
-                clone.style.borderBottomColor = 'transparent';
-            }
+      if (dayEl) dayEl.textContent = day;
+      if (timeEl) timeEl.textContent = times;
 
-            container.appendChild(clone);
-        });
-    }
+      if (index === data.opening_hours.weekday_text.length - 1) {
+        clone.style.borderBottomColor = 'transparent';
+      }
+
+      container.appendChild(clone);
+    });
+  }
 }
