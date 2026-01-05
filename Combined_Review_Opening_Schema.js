@@ -1,5 +1,5 @@
 /**
- * v1.0.3
+ * v1.0.4
  * - Schema enhancement updates an existing JSON-LD script (static base in <head>)
  * - Fixes dayOfWeek to schema.org URIs (Monday...Sunday)
  * - Supports split opening hours (e.g. "09:00–12:00, 13:00–16:00")
@@ -255,3 +255,4 @@ function displayOpeningHours(data, selectors) {
     });
   }
 }
+
