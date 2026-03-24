@@ -56,20 +56,50 @@ function hasGoogleOpeningHours(data) {
 function parseSpecialDate(value) {
   if (!value) return null;
 
-  const parts = String(value).trim().split('/');
-  if (parts.length !== 3) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
 
-  const month = parseInt(parts[0], 10);
-  const day = parseInt(parts[1], 10);
-  const year = parseInt(parts[2], 10);
+  // 1. Try MM/DD/YYYY first
+  if (raw.includes('/')) {
+    const parts = raw.split('/');
+    if (parts.length === 3) {
+      const month = parseInt(parts[0], 10);
+      const day = parseInt(parts[1], 10);
+      const year = parseInt(parts[2], 10);
 
-  if (!month || !day || !year) return null;
+      if (month && day && year) {
+        const date = new Date(year, month - 1, day);
+        if (!isNaN(date.getTime())) {
+          date.setHours(12, 0, 0, 0);
+          return date;
+        }
+      }
+    }
+  }
 
-  const date = new Date(year, month - 1, day);
-  if (isNaN(date.getTime())) return null;
+  // 2. Try native date parsing for values like "March 26, 2026"
+  const nativeParsed = new Date(raw);
+  if (!isNaN(nativeParsed.getTime())) {
+    nativeParsed.setHours(12, 0, 0, 0);
+    return nativeParsed;
+  }
 
-  date.setHours(12, 0, 0, 0);
-  return date;
+  // 3. Try YYYY-MM-DD just in case
+  const isoMatch = raw.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoMatch) {
+    const year = parseInt(isoMatch[1], 10);
+    const month = parseInt(isoMatch[2], 10);
+    const day = parseInt(isoMatch[3], 10);
+
+    const date = new Date(year, month - 1, day);
+    if (!isNaN(date.getTime())) {
+      date.setHours(12, 0, 0, 0);
+      return date;
+    }
+  }
+
+  console.warn('Could not parse opening-hours-special date:', raw);
+  return null;
 }
 
 /**
