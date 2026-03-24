@@ -1,9 +1,10 @@
 /**
- * v1.0.4
+ * v1.0.5
  * - Schema enhancement updates an existing JSON-LD script (static base in <head>)
  * - Fixes dayOfWeek to schema.org URIs (Monday...Sunday)
  * - Supports split opening hours (e.g. "09:00–12:00, 13:00–16:00")
  * - Only adds aggregateRating when data exists
+ * - Adds fallback opening hours from Webflow fallback elements when Google does not return opening hours
  */
 
 /**
@@ -17,22 +18,83 @@ function loadGoogleData(placeId, options = {}) {
   fetch(endpoint)
     .then(res => res.json())
     .then(data => {
-      // Enhance schema (updates existing JSON-LD in <head>)
+      const mergedData = withFallbackOpeningHours(data, options.openingHoursSelectors || {});
+
       if (options.schemaEnhanceEnabled) {
-        enhanceSchema(data, options.schemaFields || {}, options.schemaTargetId);
+        enhanceSchema(mergedData, options.schemaFields || {}, options.schemaTargetId);
       }
 
-      // UI: Reviews
       if (options.reviewsEnabled) {
-        displayReviews(data, options.reviewSelectors || {});
+        displayReviews(mergedData, options.reviewSelectors || {});
       }
 
-      // UI: Opening hours
       if (options.openingHoursEnabled) {
-        displayOpeningHours(data, options.openingHoursSelectors || {});
+        displayOpeningHours(mergedData, options.openingHoursSelectors || {});
       }
     })
     .catch(err => console.error('Error fetching place details:', err));
+}
+
+/**
+ * Returns true if Google opening hours exist.
+ */
+function hasGoogleOpeningHours(data) {
+  return !!(
+    data &&
+    data.opening_hours &&
+    Array.isArray(data.opening_hours.weekday_text) &&
+    data.opening_hours.weekday_text.length
+  );
+}
+
+/**
+ * Build Google-like opening_hours.weekday_text from fallback DOM elements.
+ */
+function getFallbackOpeningHours(selectors = {}) {
+  const fallbackListSelector = selectors.fallbackList || '[opening-hours="fallback-list"]';
+  const fallbackItemSelector = selectors.fallbackItem || '[opening-hours="fallback-item"]';
+  const fallbackDaySelector = selectors.fallbackDay || '[opening-hours="fallback-day"]';
+  const fallbackTimeSelector = selectors.fallbackTime || '[opening-hours="fallback-time"]';
+
+  const fallbackList = document.querySelector(fallbackListSelector);
+  if (!fallbackList) return null;
+
+  const fallbackItems = fallbackList.querySelectorAll(fallbackItemSelector);
+  if (!fallbackItems.length) return null;
+
+  const weekdayText = [];
+
+  fallbackItems.forEach(item => {
+    const day = item.querySelector(fallbackDaySelector)?.textContent?.trim();
+    const time = item.querySelector(fallbackTimeSelector)?.textContent?.trim();
+
+    if (!day || !time) return;
+
+    weekdayText.push(`${day}: ${time}`);
+  });
+
+  if (!weekdayText.length) return null;
+
+  return {
+    weekday_text: weekdayText
+  };
+}
+
+/**
+ * Use Google opening hours if available, otherwise fallback DOM hours.
+ */
+function withFallbackOpeningHours(data, selectors = {}) {
+  if (hasGoogleOpeningHours(data)) return data;
+
+  const fallbackOpeningHours = getFallbackOpeningHours(selectors);
+  if (!fallbackOpeningHours) return data;
+
+  console.log('Using fallback opening hours from Webflow elements');
+
+  return {
+    ...data,
+    opening_hours: fallbackOpeningHours
+  };
 }
 
 /**
@@ -60,16 +122,13 @@ function parseWeekdayTextToSpecs(weekdayText) {
   const parts = String(weekdayText).split(': ');
   const dayNo = (parts[0] || '').trim();
 
-  // If the format is unexpected, bail out safely.
   if (!dayNo || !parts[1]) return [];
 
   const timePartRaw = parts[1].trim();
   if (!timePartRaw || timePartRaw.toLowerCase() === 'stengt') return [];
 
-  const dayOfWeekUri = DAY_URI_MAP[dayNo] || dayNo; // fallback if not matched
+  const dayOfWeekUri = DAY_URI_MAP[dayNo] || dayNo;
 
-  // Normalize dash characters and split on commas for multiple intervals.
-  // Google sometimes uses en-dash or em-dash.
   const normalized = timePartRaw.replace(/–|—/g, '-');
   const intervals = normalized.split(',').map(s => s.trim()).filter(Boolean);
 
@@ -118,26 +177,22 @@ function enhanceSchema(placeData, fields, targetId) {
     return;
   }
 
-  // Ensure @context exists
   base["@context"] = base["@context"] || "https://schema.org";
 
-  // Ensure @type is array-friendly
   if (fields.type) {
     base["@type"] = Array.isArray(fields.type) ? fields.type : [fields.type];
   } else if (!base["@type"]) {
     base["@type"] = ["LocalBusiness"];
   }
 
-  // Optional: medicalSpecialty only if provided and type is medical-like
   if (fields.medicalSpecialty && String(fields.medicalSpecialty).trim() !== "") {
     const typeStr = Array.isArray(base["@type"]) ? String(base["@type"][0] || "") : String(base["@type"] || "");
-    const isMedicalType = /medical|clinic|hospital צור|dentist|physio|podiat/i.test(typeStr.toLowerCase());
+    const isMedicalType = /medical|clinic|hospital|dentist|physio|podiat/i.test(typeStr.toLowerCase());
     if (isMedicalType) {
       base.medicalSpecialty = String(fields.medicalSpecialty).trim();
     }
   }
 
-  // sameAs: merge in gbp if provided and not present
   if (fields.gbp && typeof fields.gbp === "string") {
     const gbp = fields.gbp.trim();
     if (gbp) {
@@ -147,7 +202,6 @@ function enhanceSchema(placeData, fields, targetId) {
     }
   }
 
-  // Aggregate rating only if real data exists
   if (typeof placeData.rating === "number" && typeof placeData.user_ratings_total === "number") {
     base.aggregateRating = {
       "@type": "AggregateRating",
@@ -156,18 +210,17 @@ function enhanceSchema(placeData, fields, targetId) {
     };
   }
 
-  // Opening hours specification from Google Places weekday_text
   const openingSpecs = [];
   if (placeData.opening_hours && Array.isArray(placeData.opening_hours.weekday_text)) {
     placeData.opening_hours.weekday_text.forEach(line => {
       openingSpecs.push(...parseWeekdayTextToSpecs(line));
     });
   }
+
   if (openingSpecs.length) {
     base.openingHoursSpecification = openingSpecs;
   }
 
-  // Write back to the same script tag
   el.textContent = JSON.stringify(base, null, 2);
 }
 
@@ -190,7 +243,6 @@ function displayReviews(data, selectors) {
 
   const textWrappers = document.querySelectorAll(selectors.textWrapper || '[hero-reviews="text-wrapper"]');
 
-  // Safer reviews link: use place_id if available in endpoint response (if you include it)
   const reviewsLink =
     selectors.reviewsLink ||
     (data.place_id
@@ -255,4 +307,3 @@ function displayOpeningHours(data, selectors) {
     });
   }
 }
-
