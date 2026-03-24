@@ -1,10 +1,13 @@
 /**
- * v1.0.5
+ * v1.0.6
  * - Schema enhancement updates an existing JSON-LD script (static base in <head>)
  * - Fixes dayOfWeek to schema.org URIs (Monday...Sunday)
  * - Supports split opening hours (e.g. "09:00–12:00, 13:00–16:00")
  * - Only adds aggregateRating when data exists
  * - Adds fallback opening hours from Webflow fallback elements when Google does not return opening hours
+ * - Supports special fallback opening hours by week using:
+ *   - opening-hours-day-id="1..7"
+ *   - opening-hours-special="MM/DD/YYYY"
  */
 
 /**
@@ -48,7 +51,69 @@ function hasGoogleOpeningHours(data) {
 }
 
 /**
+ * Parse special date in MM/DD/YYYY format.
+ */
+function parseSpecialDate(value) {
+  if (!value) return null;
+
+  const parts = String(value).trim().split('/');
+  if (parts.length !== 3) return null;
+
+  const month = parseInt(parts[0], 10);
+  const day = parseInt(parts[1], 10);
+  const year = parseInt(parts[2], 10);
+
+  if (!month || !day || !year) return null;
+
+  const date = new Date(year, month - 1, day);
+  if (isNaN(date.getTime())) return null;
+
+  date.setHours(12, 0, 0, 0);
+  return date;
+}
+
+/**
+ * Get Monday 00:00:00 of current week.
+ */
+function getStartOfWeek(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+
+  const jsDay = d.getDay(); // Sunday=0, Monday=1, ..., Saturday=6
+  const diffToMonday = jsDay === 0 ? -6 : 1 - jsDay;
+
+  d.setDate(d.getDate() + diffToMonday);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+/**
+ * Get Sunday 23:59:59.999 of current week.
+ */
+function getEndOfWeek(date) {
+  const start = getStartOfWeek(date);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  end.setHours(23, 59, 59, 999);
+  return end;
+}
+
+/**
+ * Returns true if a date falls in the current week (Monday-Sunday).
+ */
+function isDateInCurrentWeek(date) {
+  if (!(date instanceof Date) || isNaN(date.getTime())) return false;
+
+  const now = new Date();
+  const start = getStartOfWeek(now);
+  const end = getEndOfWeek(now);
+
+  return date >= start && date <= end;
+}
+
+/**
  * Build Google-like opening_hours.weekday_text from fallback DOM elements.
+ * Supports ordinary items and special items for the current week.
  */
 function getFallbackOpeningHours(selectors = {}) {
   const fallbackListSelector = selectors.fallbackList || '[opening-hours="fallback-list"]';
@@ -59,21 +124,49 @@ function getFallbackOpeningHours(selectors = {}) {
   const fallbackList = document.querySelector(fallbackListSelector);
   if (!fallbackList) return null;
 
-  const fallbackItems = fallbackList.querySelectorAll(fallbackItemSelector);
+  const fallbackItems = Array.from(fallbackList.querySelectorAll(fallbackItemSelector));
   if (!fallbackItems.length) return null;
 
-  const weekdayText = [];
+  const ordinaryByDayId = new Map();
+  const specialByDayId = new Map();
 
   fallbackItems.forEach(item => {
+    const dayId = String(item.getAttribute('opening-hours-day-id') || '').trim();
+    const specialRaw = String(item.getAttribute('opening-hours-special') || '').trim();
+
+    if (!dayId) return;
+
     const day = item.querySelector(fallbackDaySelector)?.textContent?.trim();
     const time = item.querySelector(fallbackTimeSelector)?.textContent?.trim();
 
     if (!day || !time) return;
 
-    weekdayText.push(`${day}: ${time}`);
+    if (!specialRaw) {
+      if (!ordinaryByDayId.has(dayId)) {
+        ordinaryByDayId.set(dayId, `${day}: ${time}`);
+      }
+      return;
+    }
+
+    const specialDate = parseSpecialDate(specialRaw);
+    if (!specialDate) return;
+
+    if (isDateInCurrentWeek(specialDate)) {
+      specialByDayId.set(dayId, `${day}: ${time}`);
+    }
   });
 
+  const weekdayText = [];
+
+  for (let i = 1; i <= 7; i++) {
+    const key = String(i);
+    const line = specialByDayId.get(key) || ordinaryByDayId.get(key);
+    if (line) weekdayText.push(line);
+  }
+
   if (!weekdayText.length) return null;
+
+  console.log('Fallback weekday_text used:', weekdayText);
 
   return {
     weekday_text: weekdayText
@@ -111,7 +204,7 @@ const DAY_URI_MAP = {
 };
 
 /**
- * Parses a single weekday_text line from Google (Norwegian) into opening specs.
+ * Parses a single weekday_text line from Google or fallback text into opening specs.
  * Examples:
  * "Mandag: 09:00–16:00"
  * "Tirsdag: Stengt"
