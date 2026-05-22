@@ -260,6 +260,23 @@ const DAY_URI_MAP = {
  * "Onsdag: 09:00–12:00, 13:00–16:00"
  * Returns array of OpeningHoursSpecification objects (possibly empty).
  */
+function normalizeSchemaTime(value) {
+  if (!value) return null;
+
+  const raw = String(value).trim();
+
+  // Already valid HH:MM
+  if (/^\d{2}:\d{2}$/.test(raw)) return raw;
+
+  // Convert H:MM to HH:MM
+  const shortMatch = raw.match(/^(\d{1}):(\d{2})$/);
+  if (shortMatch) {
+    return `0${shortMatch[1]}:${shortMatch[2]}`;
+  }
+
+  return null;
+}
+
 function parseWeekdayTextToSpecs(weekdayText) {
   const raw = String(weekdayText || '').trim();
   if (!raw) return [];
