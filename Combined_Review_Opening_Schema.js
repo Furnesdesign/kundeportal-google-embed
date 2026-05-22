@@ -224,13 +224,32 @@ function withFallbackOpeningHours(data, selectors = {}) {
  * Convert Norwegian day names to schema.org DayOfWeek URIs.
  */
 const DAY_URI_MAP = {
-  "Mandag": "https://schema.org/Monday",
-  "Tirsdag": "https://schema.org/Tuesday",
-  "Onsdag": "https://schema.org/Wednesday",
-  "Torsdag": "https://schema.org/Thursday",
-  "Fredag": "https://schema.org/Friday",
-  "Lørdag": "https://schema.org/Saturday",
-  "Søndag": "https://schema.org/Sunday"
+  // Norwegian
+  "mandag": "https://schema.org/Monday",
+  "tirsdag": "https://schema.org/Tuesday",
+  "onsdag": "https://schema.org/Wednesday",
+  "torsdag": "https://schema.org/Thursday",
+  "fredag": "https://schema.org/Friday",
+  "lørdag": "https://schema.org/Saturday",
+  "søndag": "https://schema.org/Sunday",
+
+  // English
+  "monday": "https://schema.org/Monday",
+  "tuesday": "https://schema.org/Tuesday",
+  "wednesday": "https://schema.org/Wednesday",
+  "thursday": "https://schema.org/Thursday",
+  "friday": "https://schema.org/Friday",
+  "saturday": "https://schema.org/Saturday",
+  "sunday": "https://schema.org/Sunday",
+
+  // Schema.org short/full values, just in case they already come through
+  "https://schema.org/monday": "https://schema.org/Monday",
+  "https://schema.org/tuesday": "https://schema.org/Tuesday",
+  "https://schema.org/wednesday": "https://schema.org/Wednesday",
+  "https://schema.org/thursday": "https://schema.org/Thursday",
+  "https://schema.org/friday": "https://schema.org/Friday",
+  "https://schema.org/saturday": "https://schema.org/Saturday",
+  "https://schema.org/sunday": "https://schema.org/Sunday"
 };
 
 /**
@@ -242,24 +261,50 @@ const DAY_URI_MAP = {
  * Returns array of OpeningHoursSpecification objects (possibly empty).
  */
 function parseWeekdayTextToSpecs(weekdayText) {
-  const parts = String(weekdayText).split(': ');
-  const dayNo = (parts[0] || '').trim();
+  const raw = String(weekdayText || '').trim();
+  if (!raw) return [];
 
-  if (!dayNo || !parts[1]) return [];
+  const firstColonIndex = raw.indexOf(':');
+  if (firstColonIndex === -1) return [];
 
-  const timePartRaw = parts[1].trim();
-  if (!timePartRaw || timePartRaw.toLowerCase() === 'stengt') return [];
+  const dayRaw = raw.slice(0, firstColonIndex).trim();
+  const timePartRaw = raw.slice(firstColonIndex + 1).trim();
 
-  const dayOfWeekUri = DAY_URI_MAP[dayNo] || dayNo;
+  if (!dayRaw || !timePartRaw) return [];
 
-  const normalized = timePartRaw.replace(/–|—/g, '-');
-  const intervals = normalized.split(',').map(s => s.trim()).filter(Boolean);
+  const closedValues = ['stengt', 'closed', 'lukket'];
+  if (closedValues.includes(timePartRaw.toLowerCase())) return [];
+
+  const dayKey = dayRaw.toLowerCase();
+  const dayOfWeekUri = DAY_URI_MAP[dayKey];
+
+  if (!dayOfWeekUri) {
+    console.warn('Unknown dayOfWeek value. Skipping opening hours schema for:', dayRaw);
+    return [];
+  }
+
+  const normalized = timePartRaw
+    .replace(/–|—/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const intervals = normalized
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
 
   const specs = [];
 
   intervals.forEach(interval => {
-    const [opens, closes] = interval.split('-').map(s => (s || '').trim());
-    if (!opens || !closes) return;
+    const [opensRaw, closesRaw] = interval.split('-').map(s => (s || '').trim());
+
+    const opens = normalizeSchemaTime(opensRaw);
+    const closes = normalizeSchemaTime(closesRaw);
+
+    if (!opens || !closes) {
+      console.warn('Invalid opening interval. Skipping:', interval);
+      return;
+    }
 
     specs.push({
       "@type": "OpeningHoursSpecification",
